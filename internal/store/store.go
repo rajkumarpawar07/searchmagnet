@@ -1,13 +1,9 @@
-// Package store handles persistence and similarity math for the embedding index.
+// Package store defines the Store interface and shared types for the embedding index.
 package store
 
 import (
-	"encoding/json"
-	"errors"
-	"fmt"
+	"context"
 	"math"
-	"os"
-	"strings"
 	"time"
 )
 
@@ -22,73 +18,42 @@ type IndexEntry struct {
 	IndexedAt   time.Time `json:"indexed_at"`
 }
 
-// Index holds all indexed entries.
-type Index struct {
-	Entries []IndexEntry `json:"entries"`
+// ScoredEntry is an IndexEntry with its similarity score attached.
+type ScoredEntry struct {
+	IndexEntry
+	Score float64
 }
 
-// Load reads the index from a JSON file. Returns an empty index if the file doesn't exist.
-func Load(path string) (*Index, error) {
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return &Index{}, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("reading index: %w", err)
-	}
-	var idx Index
-	if err := json.Unmarshal(data, &idx); err != nil {
-		return nil, fmt.Errorf("parsing index: %w", err)
-	}
-	return &idx, nil
+// Store is the storage backend interface used by the server and CLI.
+type Store interface {
+	// Add inserts a new entry into the index.
+	Add(ctx context.Context, entry IndexEntry) error
+
+	// List returns all entries in the index (no embedding vectors).
+	List(ctx context.Context) ([]IndexEntry, error)
+
+	// Search finds the top-K most similar entries to the given vector.
+	// typeFilter is an optional content_type to restrict results.
+	Search(ctx context.Context, vec []float32, topK int, typeFilter string) ([]ScoredEntry, error)
+
+	// FindByID returns the entry whose ID starts with the given prefix, or nil.
+	FindByID(ctx context.Context, id string) (*IndexEntry, error)
+
+	// Delete removes entries whose ID matches (prefix match). Returns deleted count.
+	Delete(ctx context.Context, id string) (int, error)
+
+	// HasFilePath returns true if any entry references the given file path.
+	HasFilePath(ctx context.Context, path string) (bool, error)
+
+	// Count returns the total number of indexed entries.
+	Count(ctx context.Context) (int, error)
+
+	// TypeCounts returns a map of content_type → count.
+	TypeCounts(ctx context.Context) (map[string]int, error)
 }
 
-// Save writes the index to a JSON file.
-func Save(idx *Index, path string) error {
-	data, err := json.MarshalIndent(idx, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshaling index: %w", err)
-	}
-	return os.WriteFile(path, data, 0644)
-}
-
-// HasFilePath checks whether any entry already references the given file path.
-func (idx *Index) HasFilePath(path string) bool {
-	for _, e := range idx.Entries {
-		if e.FilePath == path {
-			return true
-		}
-	}
-	return false
-}
-
-// DeleteByIDPrefix removes entries whose ID starts with (or ends with, after "…") prefix.
-// Returns the number of entries deleted.
-func (idx *Index) DeleteByIDPrefix(prefix string) int {
-	before := len(idx.Entries)
-	filtered := idx.Entries[:0]
-	for _, e := range idx.Entries {
-		if !strings.HasSuffix(e.ID, strings.TrimPrefix(prefix, "…")) &&
-			!strings.HasPrefix(e.ID, prefix) {
-			filtered = append(filtered, e)
-		}
-	}
-	idx.Entries = filtered
-	return before - len(idx.Entries)
-}
-
-// FindByID returns a pointer to the entry matching the given ID prefix, or nil.
-func (idx *Index) FindByID(prefix string) *IndexEntry {
-	for i, e := range idx.Entries {
-		if strings.HasPrefix(e.ID, prefix) ||
-			strings.HasSuffix(e.ID, strings.TrimPrefix(prefix, "…")) {
-			return &idx.Entries[i]
-		}
-	}
-	return nil
-}
-
-// CosineSimilarity computes the cosine similarity between two float32 vectors.
+// CosineSimilarity computes cosine similarity between two float32 vectors.
+// Returns 0 if lengths differ or either vector is zero.
 func CosineSimilarity(a, b []float32) float64 {
 	if len(a) != len(b) {
 		return 0

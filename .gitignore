@@ -7,6 +7,9 @@ searchmagnet.exe
 server
 server.exe
 
+# Wails desktop build output (desktop/build)
+desktop/build/bin/
+
 # Cache
 .gocache/
 go-build/

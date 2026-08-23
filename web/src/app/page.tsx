@@ -13,26 +13,26 @@ import {
   File, 
   Trash2, 
   RefreshCcw,
-  Sparkles,
-  ArrowRight
+  Sparkles
 } from "lucide-react";
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<"search" | "index" | "database">("search");
   const [stats, setStats] = useState<Stats | null>(null);
 
-  useEffect(() => {
-    fetchStats();
-  }, []);
-
   const fetchStats = async () => {
     try {
       const data = await api.getStats();
       setStats(data);
-    } catch (e) {
+    } catch (e: unknown) {
       console.error(e);
     }
   };
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    fetchStats();
+  }, []);
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans selection:bg-zinc-800">
@@ -92,7 +92,7 @@ export default function Home() {
         {/* Content Area */}
         <section className="flex-1 min-w-0">
           <div className="animate-in fade-in slide-in-from-bottom-2 duration-300 ease-out">
-            {activeTab === "search" && <SearchTab onIndexUpdated={fetchStats} />}
+            {activeTab === "search" && <SearchTab />}
             {activeTab === "index" && <IndexTab onIndexUpdated={fetchStats} />}
             {activeTab === "database" && <DatabaseTab onIndexUpdated={fetchStats} />}
           </div>
@@ -122,7 +122,7 @@ function TabButton({ active, onClick, icon, label }: { active: boolean, onClick:
 // Search Tab
 // ──────────────────────────────────────────────────────────────
 
-function SearchTab({ onIndexUpdated }: { onIndexUpdated: () => void }) {
+function SearchTab() {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
@@ -136,8 +136,8 @@ function SearchTab({ onIndexUpdated }: { onIndexUpdated: () => void }) {
     try {
       const res = await api.search(query, topK, typeFilter);
       setResults(res.results || []);
-    } catch (e: any) {
-      alert("Search failed: " + e.message);
+    } catch (e: unknown) {
+      alert("Search failed: " + (e as Error).message);
     } finally {
       setLoading(false);
     }
@@ -148,8 +148,8 @@ function SearchTab({ onIndexUpdated }: { onIndexUpdated: () => void }) {
     try {
       const res = await api.findSimilar(id, topK);
       setResults(res.results || []);
-    } catch (e: any) {
-      alert("Find similar failed: " + e.message);
+    } catch (e: unknown) {
+      alert("Find similar failed: " + (e as Error).message);
     } finally {
       setLoading(false);
     }
@@ -216,7 +216,7 @@ function SearchTab({ onIndexUpdated }: { onIndexUpdated: () => void }) {
           </div>
           <div className="grid gap-3">
             {results.map((res) => (
-              <ResultCard key={res.id} result={res} />
+              <ResultCard key={res.id} result={res} onFindSimilar={handleSimilar} />
             ))}
           </div>
         </div>
@@ -235,7 +235,7 @@ function getTypeIcon(type: string) {
   }
 }
 
-function ResultCard({ result }: { result: SearchResult }) {
+function ResultCard({ result, onFindSimilar }: { result: SearchResult; onFindSimilar?: (id: string) => void }) {
   // Map score to a simple percentage 
   const scorePercent = (result.score * 100).toFixed(1);
   
@@ -293,6 +293,16 @@ function ResultCard({ result }: { result: SearchResult }) {
             <span className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold block mb-0.5">Similarity</span>
             <span className={`text-sm font-mono font-medium ${scoreColor}`}>{scorePercent}%</span>
           </div>
+          {onFindSimilar && (
+            <button
+              onClick={() => onFindSimilar(result.id)}
+              className="flex items-center gap-1 text-xs text-zinc-400 hover:text-zinc-100 bg-zinc-900 hover:bg-zinc-800 px-2.5 py-1 rounded border border-zinc-800 transition-colors"
+              title="Find similar items in the database"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Find Similar</span>
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -319,8 +329,8 @@ function IndexTab({ onIndexUpdated }: { onIndexUpdated: () => void }) {
       setFile(null);
       setLabel("");
       onIndexUpdated();
-    } catch (e: any) {
-      alert("Upload failed: " + e.message);
+    } catch (e: unknown) {
+      alert("Upload failed: " + (e as Error).message);
     } finally {
       setLoading(false);
     }
@@ -335,8 +345,8 @@ function IndexTab({ onIndexUpdated }: { onIndexUpdated: () => void }) {
       alert("Text indexed successfully!");
       setText("");
       onIndexUpdated();
-    } catch (e: any) {
-      alert("Indexing failed: " + e.message);
+    } catch (e: unknown) {
+      alert("Indexing failed: " + (e as Error).message);
     } finally {
       setLoading(false);
     }
@@ -443,21 +453,24 @@ function DatabaseTab({ onIndexUpdated }: { onIndexUpdated: () => void }) {
   const [entries, setEntries] = useState<IndexEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    fetchEntries();
-  }, []);
-
-  const fetchEntries = async () => {
-    setLoading(true);
+  const fetchEntries = async (showLoading = true) => {
+    if (showLoading) {
+      setLoading(true);
+    }
     try {
       const res = await api.listEntries();
       setEntries(res.entries || []);
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(e);
     } finally {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    fetchEntries(false);
+  }, []);
 
   const handleDelete = async (id: string) => {
     if (!confirm("Delete this entry?")) return;
@@ -465,8 +478,8 @@ function DatabaseTab({ onIndexUpdated }: { onIndexUpdated: () => void }) {
       await api.deleteEntry(id);
       fetchEntries();
       onIndexUpdated();
-    } catch (e: any) {
-      alert("Delete failed: " + e.message);
+    } catch (e: unknown) {
+      alert("Delete failed: " + (e as Error).message);
     }
   };
 

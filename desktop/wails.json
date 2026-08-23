@@ -1,0 +1,18 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "searchmagnet-desktop",
+  "outputfilename": "SearchMagnet",
+  "frontend:install": "",
+  "frontend:build": "",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": "",
+  "author": {
+    "name": "Rajkumar Pawar"
+  },
+  "info": {
+    "productName": "SearchMagnet",
+    "productVersion": "1.0.0",
+    "copyright": "Copyright © 2026 Rajkumar Pawar",
+    "comments": "Semantic search across your local files, powered by Gemini."
+  }
+}

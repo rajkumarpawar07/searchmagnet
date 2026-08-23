@@ -20,9 +20,8 @@ import (
 	"github.com/rajkumarpawar07/searchmagnet/internal/store"
 )
 
-const indexFile = "embeddings.json"
-
 var client *genai.Client
+var db store.Store
 
 func embeddingModel() string {
 	m := os.Getenv("GEMINI_EMBEDDING_MODEL")
@@ -67,6 +66,7 @@ func entryToResponse(e store.IndexEntry) EntryResponse {
 // ──────────────────────────────────────────────────────────────
 
 func handleIndex(c *fiber.Ctx) error {
+	ctx := context.Background()
 	file, err := c.FormFile("file")
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "file is required (multipart form field 'file')"})
@@ -97,11 +97,11 @@ func handleIndex(c *fiber.Ctx) error {
 	}
 
 	// Duplicate check
-	idx, err := store.Load(indexFile)
+	exists, err := db.HasFilePath(ctx, file.Filename)
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("loading index: %v", err)})
+		return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("checking index: %v", err)})
 	}
-	if idx.HasFilePath(file.Filename) {
+	if exists {
 		return c.Status(409).JSON(fiber.Map{"error": "file already indexed", "file": file.Filename})
 	}
 
@@ -111,7 +111,6 @@ func handleIndex(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("preparing content: %v", err)})
 	}
 
-	ctx := context.Background()
 	vec, err := embedder.Embed(ctx, client, embeddingModel(), contents)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("embedding: %v", err)})
@@ -126,9 +125,8 @@ func handleIndex(c *fiber.Ctx) error {
 		Embedding:   vec,
 		IndexedAt:   time.Now(),
 	}
-	idx.Entries = append(idx.Entries, entry)
 
-	if err := store.Save(idx, indexFile); err != nil {
+	if err := db.Add(ctx, entry); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("saving index: %v", err)})
 	}
 
@@ -144,6 +142,7 @@ func handleIndex(c *fiber.Ctx) error {
 // ──────────────────────────────────────────────────────────────
 
 func handleIndexText(c *fiber.Ctx) error {
+	ctx := context.Background()
 	type req struct {
 		Text string `json:"text"`
 	}
@@ -152,13 +151,7 @@ func handleIndexText(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "JSON body with 'text' field is required"})
 	}
 
-	idx, err := store.Load(indexFile)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("loading index: %v", err)})
-	}
-
 	contents := embedder.ContentsFromText(body.Text)
-	ctx := context.Background()
 	vec, err := embedder.Embed(ctx, client, embeddingModel(), contents)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("embedding: %v", err)})
@@ -171,9 +164,8 @@ func handleIndexText(c *fiber.Ctx) error {
 		Embedding:   vec,
 		IndexedAt:   time.Now(),
 	}
-	idx.Entries = append(idx.Entries, entry)
 
-	if err := store.Save(idx, indexFile); err != nil {
+	if err := db.Add(ctx, entry); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("saving index: %v", err)})
 	}
 
@@ -189,6 +181,7 @@ func handleIndexText(c *fiber.Ctx) error {
 // ──────────────────────────────────────────────────────────────
 
 func handleSearch(c *fiber.Ctx) error {
+	ctx := context.Background()
 	query := c.Query("q")
 	if query == "" {
 		return c.Status(400).JSON(fiber.Map{"error": "query parameter 'q' is required"})
@@ -197,45 +190,30 @@ func handleSearch(c *fiber.Ctx) error {
 	topK := c.QueryInt("top", 5)
 	typeFilter := c.Query("type", "")
 
-	idx, err := store.Load(indexFile)
+	count, err := db.Count(ctx)
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("loading index: %v", err)})
+		return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("checking index: %v", err)})
 	}
-	if len(idx.Entries) == 0 {
+	if count == 0 {
 		return c.JSON(fiber.Map{"results": []SearchResult{}, "message": "index is empty"})
 	}
 
-	ctx := context.Background()
 	queryVec, err := embedder.Embed(ctx, client, embeddingModel(), embedder.ContentsFromText(query))
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("embedding query: %v", err)})
 	}
 
-	type scored struct {
-		entry store.IndexEntry
-		score float64
-	}
-	var results []scored
-	for _, e := range idx.Entries {
-		if typeFilter != "" && e.ContentType != typeFilter {
-			continue
-		}
-		results = append(results, scored{e, store.CosineSimilarity(queryVec, e.Embedding)})
+	results, err := db.Search(ctx, queryVec, topK, typeFilter)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("search: %v", err)})
 	}
 
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].score > results[j].score
-	})
-	if topK > len(results) {
-		topK = len(results)
-	}
-
-	out := make([]SearchResult, topK)
-	for i, r := range results[:topK] {
+	out := make([]SearchResult, len(results))
+	for i, r := range results {
 		out[i] = SearchResult{
 			Rank:          i + 1,
-			Score:         r.score,
-			EntryResponse: entryToResponse(r.entry),
+			Score:         r.Score,
+			EntryResponse: entryToResponse(r.IndexEntry),
 		}
 	}
 
@@ -251,19 +229,20 @@ func handleSearch(c *fiber.Ctx) error {
 // ──────────────────────────────────────────────────────────────
 
 func handleList(c *fiber.Ctx) error {
-	idx, err := store.Load(indexFile)
+	ctx := context.Background()
+	entries, err := db.List(ctx)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("loading index: %v", err)})
 	}
 
-	entries := make([]EntryResponse, len(idx.Entries))
-	for i, e := range idx.Entries {
-		entries[i] = entryToResponse(e)
+	out := make([]EntryResponse, len(entries))
+	for i, e := range entries {
+		out[i] = entryToResponse(e)
 	}
 
 	return c.JSON(fiber.Map{
-		"entries": entries,
-		"total":   len(entries),
+		"entries": out,
+		"total":   len(out),
 	})
 }
 
@@ -272,23 +251,18 @@ func handleList(c *fiber.Ctx) error {
 // ──────────────────────────────────────────────────────────────
 
 func handleDelete(c *fiber.Ctx) error {
+	ctx := context.Background()
 	idPrefix := c.Params("id")
 	if idPrefix == "" {
 		return c.Status(400).JSON(fiber.Map{"error": "id parameter is required"})
 	}
 
-	idx, err := store.Load(indexFile)
+	deleted, err := db.Delete(ctx, idPrefix)
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("loading index: %v", err)})
+		return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("deleting index: %v", err)})
 	}
-
-	deleted := idx.DeleteByIDPrefix(idPrefix)
 	if deleted == 0 {
 		return c.Status(404).JSON(fiber.Map{"error": "no entry found matching that ID"})
-	}
-
-	if err := store.Save(idx, indexFile); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("saving index: %v", err)})
 	}
 
 	return c.JSON(fiber.Map{"deleted": deleted})
@@ -299,45 +273,42 @@ func handleDelete(c *fiber.Ctx) error {
 // ──────────────────────────────────────────────────────────────
 
 func handleSimilar(c *fiber.Ctx) error {
+	ctx := context.Background()
 	idPrefix := c.Params("id")
 	topK := c.QueryInt("top", 5)
 
-	idx, err := store.Load(indexFile)
+	target, err := db.FindByID(ctx, idPrefix)
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("loading index: %v", err)})
+		return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("finding target: %v", err)})
 	}
-
-	target := idx.FindByID(idPrefix)
 	if target == nil {
 		return c.Status(404).JSON(fiber.Map{"error": "no entry found matching that ID"})
 	}
-
-	type scored struct {
-		entry store.IndexEntry
-		score float64
+	if len(target.Embedding) == 0 {
+		return c.Status(500).JSON(fiber.Map{"error": "target entry has no embedding vector available for similarity search"})
 	}
-	var results []scored
-	for _, e := range idx.Entries {
-		if e.ID == target.ID {
-			continue
+
+	// Request topK+1 because the result will likely include the target itself
+	results, err := db.Search(ctx, target.Embedding, topK+1, "")
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("search: %v", err)})
+	}
+
+	var out []SearchResult
+	rank := 1
+	for _, r := range results {
+		if r.ID == target.ID {
+			continue // exclude the target itself
 		}
-		results = append(results, scored{e, store.CosineSimilarity(target.Embedding, e.Embedding)})
-	}
-
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].score > results[j].score
-	})
-	if topK > len(results) {
-		topK = len(results)
-	}
-
-	out := make([]SearchResult, topK)
-	for i, r := range results[:topK] {
-		out[i] = SearchResult{
-			Rank:          i + 1,
-			Score:         r.score,
-			EntryResponse: entryToResponse(r.entry),
+		if len(out) >= topK {
+			break
 		}
+		out = append(out, SearchResult{
+			Rank:          rank,
+			Score:         r.Score,
+			EntryResponse: entryToResponse(r.IndexEntry),
+		})
+		rank++
 	}
 
 	return c.JSON(fiber.Map{
@@ -351,14 +322,15 @@ func handleSimilar(c *fiber.Ctx) error {
 // ──────────────────────────────────────────────────────────────
 
 func handleStats(c *fiber.Ctx) error {
-	idx, err := store.Load(indexFile)
+	ctx := context.Background()
+	count, err := db.Count(ctx)
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("loading index: %v", err)})
+		return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("count: %v", err)})
 	}
 
-	typeCounts := make(map[string]int)
-	for _, e := range idx.Entries {
-		typeCounts[e.ContentType]++
+	typeCounts, err := db.TypeCounts(ctx)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("type counts: %v", err)})
 	}
 
 	// Supported extensions
@@ -369,7 +341,7 @@ func handleStats(c *fiber.Ctx) error {
 	sort.Strings(exts)
 
 	return c.JSON(fiber.Map{
-		"total_entries":        len(idx.Entries),
+		"total_entries":        count,
 		"entries_by_type":      typeCounts,
 		"supported_extensions": exts,
 		"max_file_size":        format.HumanBytes(embedder.MaxFileSize),
@@ -402,10 +374,16 @@ func handleFile(c *fiber.Ctx) error {
 
 func main() {
 	_ = godotenv.Load()
+	ctx := context.Background()
+
+	// Init DB
+	var err error
+	db, err = store.NewStore(ctx)
+	if err != nil {
+		log.Fatalf("init store: %v", err)
+	}
 
 	// Init Gemini client
-	ctx := context.Background()
-	var err error
 	client, err = genai.NewClient(ctx, nil)
 	if err != nil {
 		log.Fatalf("create genai client: %v", err)

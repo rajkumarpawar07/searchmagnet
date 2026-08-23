@@ -28,6 +28,12 @@ export type Stats = {
   embedding_model: string;
 };
 
+export type IndexResponse = {
+  message: string;
+  entry: IndexEntry;
+  dim: number;
+};
+
 export const api = {
   async getStats(): Promise<Stats> {
     const res = await fetch(`${API_BASE}/stats`);
@@ -49,7 +55,7 @@ export const api = {
     return res.json();
   },
 
-  async indexText(text: string): Promise<any> {
+  async indexText(text: string): Promise<IndexResponse> {
     const res = await fetch(`${API_BASE}/index-text`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -59,7 +65,7 @@ export const api = {
     return res.json();
   },
 
-  async uploadFile(file: File, label: string): Promise<any> {
+  async uploadFile(file: File, label: string): Promise<IndexResponse> {
     const formData = new FormData();
     formData.append("file", file);
     if (label) formData.append("label", label);
